@@ -134,8 +134,8 @@ void main(void) {
 
   vec2 left = texelFetch(u_stateTexture, ivec2(coord.x != 0 ? coord.x - 1 : stateTextureSize.x - 1, coord.y), 0).xy;
   vec2 right = texelFetch(u_stateTexture, ivec2(coord.x != stateTextureSize.x - 1 ? coord.x + 1 : 0, coord.y), 0).xy;
-  vec2 up = texelFetch(u_stateTexture, ivec2(coord.x, coord.y != 0 ? coord.y - 1 : stateTextureSize.y - 1), 0).xy;
-  vec2 down = texelFetch(u_stateTexture, ivec2(coord.x, coord.y != stateTextureSize.y - 1 ? coord.y + 1 : 0), 0).xy;
+  vec2 down = texelFetch(u_stateTexture, ivec2(coord.x, coord.y != 0 ? coord.y - 1 : stateTextureSize.y - 1), 0).xy;
+  vec2 up = texelFetch(u_stateTexture, ivec2(coord.x, coord.y != stateTextureSize.y - 1 ? coord.y + 1 : 0), 0).xy;
 
   vec2 laplacian = (left + right + up + down - 4.0 * state) / (u_spaceStep * u_spaceStep);
 
@@ -154,17 +154,56 @@ precision highp float;
 out vec4 o_color;
 
 uniform sampler2D u_stateTexture;
-uniform int u_draw;
+uniform int u_target;
+uniform int u_rendering;
+uniform float u_spaceStep;
+
+float getValue(ivec2 coord) {
+  vec2 state = texelFetch(u_stateTexture, ivec2(coord), 0).xy;
+
+  if (u_target == 0) {
+    return state.x;
+  } else if (u_target == 1) {
+    return state.y;
+  } else {
+    return abs(state.x - state.y);
+  }
+}
+
+vec3 render2d(ivec2 coord) {
+  return vec3(getValue(coord));
+}
+
+vec3 lambert(vec3 color, vec3 normal, vec3 lightDir) {
+  return color * max(dot(normal, lightDir), 0.0);
+}
+
+vec3 render3d(ivec2 coord) {
+  ivec2 stateTextureSize = textureSize(u_stateTexture, 0);
+  float state = getValue(coord);
+  float left = getValue(ivec2(coord.x != 0 ? coord.x - 1 : stateTextureSize.x - 1, coord.y));
+  float right = getValue(ivec2(coord.x != stateTextureSize.x - 1 ? coord.x + 1 : 0, coord.y));
+  float down = getValue(ivec2(coord.x, coord.y != 0 ? coord.y - 1 : stateTextureSize.y - 1));
+  float up = getValue(ivec2(coord.x, coord.y != stateTextureSize.y - 1 ? coord.y + 1 : 0));
+
+  vec3 dx = vec3(2.0 * u_spaceStep, 0.0, (right - left) / (2.0 * u_spaceStep));
+  vec3 dy = vec3(0.0, 2.0 * u_spaceStep, (up - down) / (2.0 * u_spaceStep));
+
+  vec3 normal = mix(normalize(cross(dx, dy)), vec3(0.0, 0.0, 1.0), 0.5);
+
+  vec3 color = vec3(0.0);
+  color += lambert(vec3(0.8), normal, vec3(1.0, 1.0, 1.0));
+  color += lambert(vec3(0.3), normal, vec3(-1.0, -1.0, 0.3));
+  return color;
+}
 
 void main(void) {
   vec2 state = texelFetch(u_stateTexture, ivec2(gl_FragCoord.xy), 0).xy;
 
-  if (u_draw == 0) {
-    o_color = vec4(vec3(state.x), 1.0);
-  } else if (u_draw == 1) {
-    o_color = vec4(vec3(state.y), 1.0);
+  if (u_rendering == 0) {
+    o_color = vec4(render2d(ivec2(gl_FragCoord.xy)), 1.0);
   } else {
-    o_color = vec4(vec3(abs(state.x - state.y)), 1.0);
+    o_color = vec4(render3d(ivec2(gl_FragCoord.xy)), 1.0);
   }
 }
 `;
@@ -176,8 +215,9 @@ void main(void) {
     'kill': 0.06,
     'space step': 0.05,
     'time step': 0.1,
-    'time scale': 20.0,
-    'draw': 2,
+    'time scale': 100.0,
+    'target': 0,
+    'rendering': 1,
     reset: _ => reset()
   };
 
@@ -191,7 +231,8 @@ void main(void) {
   gui.add(parameters, 'space step', 0.01, 0.1).step(0.001);
   gui.add(parameters, 'time step', 0.001, 0.1).step(0.001);
   gui.add(parameters, 'time scale', 0.0, 300.0);
-  gui.add(parameters, 'draw', {'u': 0, 'v': 1, 'abs(u-v)': 2});
+  gui.add(parameters, 'target', {'u': 0, 'v': 1, 'abs(u-v)': 2});
+  gui.add(parameters, 'rendering', {'2d': 0, '3d': 1});
   gui.add(parameters, 'reset');
 
   const canvas = document.getElementById('canvas');
@@ -203,7 +244,7 @@ void main(void) {
   const renderProgram = createProgramFromSource(gl, FILL_SCREEN_VERTEX_SHADER_SOURCE, RENDER_FRAGMNET_SHADER_SOURCE);
   const initializeUniforms = getUniformLocations(gl, initializeProgram, ['u_resolution','u_randomSeed']);
   const updateUniforms = getUniformLocations(gl, updateProgram, ['u_stateTexture', 'u_diffusion', 'u_feed', 'u_kill', 'u_timeStep', 'u_spaceStep']);
-  const renderUniforms = getUniformLocations(gl, renderProgram, ['u_stateTexture', 'u_draw']);
+  const renderUniforms = getUniformLocations(gl, renderProgram, ['u_stateTexture', 'u_target', 'u_rendering', 'u_spaceStep']);
 
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
@@ -268,7 +309,9 @@ void main(void) {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, stateFbObjR.texture);
       gl.uniform1i(renderUniforms['u_stateTexture'], 0);
-      gl.uniform1i(renderUniforms['u_draw'], parameters['draw']);
+      gl.uniform1i(renderUniforms['u_target'], parameters['target']);
+      gl.uniform1i(renderUniforms['u_rendering'], parameters['rendering']);
+      gl.uniform1f(renderUniforms['u_spaceStep'], parameters['space step']);
       renderToFillScreen();
     }
 
